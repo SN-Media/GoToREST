@@ -33,8 +33,9 @@ type RestService func([]byte /*requestData*/, map[string]string /*pathParam*/, m
 type RestServiceInterceptor func([]byte /*requestData*/, map[string]string /*pathParam*/, map[string]string /*queryParam*/, map[string]string /*postParam*/, map[string]string /*headerParam*/) (*InterceptorError, any)
 
 type RestServiceStatus struct {
-	StatusCode int
-	Message    string
+	StatusCode   int
+	Message      string
+	ResponseType string
 }
 
 type InterceptorError struct {
@@ -89,17 +90,17 @@ func (a RestServer) ListenAndServe() {
 			return
 		}
 
-		created, remoteError := a.processRequest(r, globalMapping.mapping[internalPath][r.Method])
+		response, status := a.processRequest(r, globalMapping.mapping[internalPath][r.Method])
 
-		if remoteError.StatusCode != 200 {
-			w.WriteHeader(remoteError.StatusCode)
-			w.Write([]byte(remoteError.Error()))
+		if status.StatusCode != 200 {
+			w.WriteHeader(status.StatusCode)
+			w.Write([]byte(status.Error()))
 			return
 		}
 
-		if remoteError = a.writeResponse(created, w); remoteError.StatusCode != 200 {
-			w.WriteHeader(remoteError.StatusCode)
-			w.Write([]byte(remoteError.Error()))
+		if status = a.writeResponse(response, status, w); status.StatusCode != 200 {
+			w.WriteHeader(status.StatusCode)
+			w.Write([]byte(status.Error()))
 		}
 	})
 
@@ -145,7 +146,7 @@ func (a RestServer) HandleService(method string, path string, restFunc RestServi
 		}
 
 		//extract url to bind (so remove all path vars)
-		path = pathVarExtractor.ReplaceAllString(path, "([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9]))/")
+		path = pathVarExtractor.ReplaceAllString(path, "([A-Za-z0-9]*([A-Za-z0-9-]*[A-Za-z0-9]*))/")
 	}
 
 	var newPath = false
@@ -172,17 +173,17 @@ func (a RestServer) HandleService(method string, path string, restFunc RestServi
 				return
 			}
 
-			created, remoteError := a.processRequest(r, globalMapping.mapping[internalPath][r.Method])
+			serviceResponseData, restServiceStatus := a.processRequest(r, globalMapping.mapping[internalPath][r.Method])
 
-			if remoteError.StatusCode != 200 {
-				w.WriteHeader(remoteError.StatusCode)
-				w.Write([]byte(remoteError.Error()))
+			if restServiceStatus.StatusCode != 200 {
+				w.WriteHeader(restServiceStatus.StatusCode)
+				w.Write([]byte(restServiceStatus.Error()))
 				return
 			}
 
-			if remoteError = a.writeResponse(created, w); remoteError.StatusCode != 200 {
-				w.WriteHeader(remoteError.StatusCode)
-				w.Write([]byte(remoteError.Error()))
+			if restServiceStatus = a.writeResponse(serviceResponseData, restServiceStatus, w); restServiceStatus.StatusCode != 200 {
+				w.WriteHeader(restServiceStatus.StatusCode)
+				w.Write([]byte(restServiceStatus.Error()))
 			}
 		})
 	}
@@ -286,7 +287,7 @@ func extractVarsFromPathVarMapping(requestPath string, method string) (map[strin
 
 			var varsValue []string
 			for pathKey, pathVar := range varsPosition {
-				if pathVar == "([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9]))" && urlParts[pathKey] != "" {
+				if pathVar == "([A-Za-z0-9]*([A-Za-z0-9-]*[A-Za-z0-9]*))" && urlParts[pathKey] != "" {
 					varsValue = append(varsValue, urlParts[pathKey])
 				}
 			}
@@ -303,14 +304,22 @@ func extractVarsFromPathVarMapping(requestPath string, method string) (map[strin
 	return pathVars, nil
 }
 
-func (a RestServer) writeResponse(response any, w http.ResponseWriter) RestServiceStatus {
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		return RestServiceStatus{StatusCode: http.StatusInternalServerError, Message: err.Error()}
+func (a RestServer) writeResponse(response any, status RestServiceStatus, w http.ResponseWriter) RestServiceStatus {
+	if status.ResponseType == "" {
+		status.ResponseType = "application/json"
 	}
+
+	w.Header().Set("Content-Type", status.ResponseType)
 	w.WriteHeader(http.StatusOK)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonResponse)
+	if status.ResponseType == "application/json" {
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			return RestServiceStatus{StatusCode: http.StatusInternalServerError, Message: err.Error()}
+		}
+		w.Write(jsonResponse)
+	} else {
+		w.Write(response.([]byte))
+	}
 
 	return RestServiceStatus{StatusCode: http.StatusOK}
 }
